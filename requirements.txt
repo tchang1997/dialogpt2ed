@@ -1,0 +1,4 @@
+datasets==1.2.1
+transformers==4.2.0
+wandb
+pytorch_lightning

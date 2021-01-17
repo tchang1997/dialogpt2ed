@@ -1,0 +1,36 @@
+name: "microsoft/DialoGPT-medium" # change this when using pretrained
+model: 
+    optimizer:
+        name: "AdamW"
+        kwargs:
+            lr: 6.25e-5
+            correct_bias: True
+    inference:
+        temperature: 0.7
+        top_k: 20
+        top_p: 0.9
+        min_length: 1
+        max_length: 20
+    train:
+        lm_weight: 1
+        mc_weight: 1
+data:
+    name: "./data/empatheticdialogues/ed_merged.json"
+    batch_size: 4
+    tokenizer: "microsoft/DialoGPT-medium" # change this when using pretrained
+    dataset_cache: "./data/empatheticdialogues/ed_cache.bin"
+    num_candidates: 2
+    max_history: 2
+callbacks:
+    ModelCheckpoint:
+        monitor: 'val_loss'
+        save_top_k: 1
+        verbose: True
+    EarlyStopping:
+        monitor: 'val_loss'
+        mode: 'min'
+        verbose: True
+logger:
+    name: "dialogpt_ed_finetune"
+    project: "dialogpt2ed"
+
