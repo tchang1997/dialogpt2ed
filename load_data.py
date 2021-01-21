@@ -10,11 +10,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformers import GPT2Tokenizer
 
 import utils
+from utils import PAD_VALUE
 
 import logging
 logger = logging.getLogger(__file__)
 
-SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
+PAD_VALUE = -100
+SPEAKER1_ID, SPEAKER2_ID = list(range(2))
+# SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
 
 def hugging_face_load_dataset(name, split=None):
     return load_dataset(name, split=split)
@@ -36,6 +39,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
     def setup(self, stage):
         logger.info("Setting up tokenizer and raw data...")
         self.tokenizer = GPT2Tokenizer.from_pretrained(self.tokenizer)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
         if self.name in list_datasets():
             logger.info("Loading HuggingFace dataset...")
@@ -49,7 +53,9 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             self.train = self.dataset_setup_fn(self.name, split="train")
             self.val = self.dataset_setup_fn(self.name, split="valid")
         elif stage == 'test':
-            self.test = self.dataset_setup_fn(self.name, split="test")
+            # DSYITF - don't  shoot yourself in the foot. Comment this out when doing pre-prod testing. 
+            self.val = self.dataset_setup_fn(self.name, split="valid")
+            # self.test = self.dataset_setup_fn(self.name, split="test")
         else:
             raise NotImplementedError()
 
@@ -95,28 +101,28 @@ class HuggingFaceDataModule(pl.LightningDataModule):
                         dataset_info[input_name].append(input_array)
                 dataset_info["mc_labels"].append(num_candidates - 1)  # the index of the correct answer for the multiple choice
                 dataset_info["n_candidates"] = num_candidates
-        return dataset_info # dict w/ keys input_name, mc_labels, n_candidates
+        return dataset_info
 
 
     def build_input_from_segments(self, history, reply, lm_labels=False, with_eos=True):
-        bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
+        # bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
         instance = {}
-        sequence = history + [reply + ([eos] if with_eos else [])]
-        sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
+        sequence = history + [reply + ([self.tokenizer.eos_token_id] if with_eos else [])]
+        # sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
 
         instance["input_ids"] = list(chain(*sequence))  # list of ints
-        instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
+        instance["token_type_ids"] = [SPEAKER2_ID if i % 2 else SPEAKER1_ID for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
         instance["mc_token_ids"] = len(instance["input_ids"]) - 1  # int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
-        instance["lm_labels"] = [-1] * len(instance["input_ids"])  # -1 for the whole sequence if lm_labels=False
+        instance["labels"] = [PAD_VALUE] * len(instance["input_ids"])  # -100 for the whole sequence if lm_labels=False
         if lm_labels:
-            instance["lm_labels"] = ([-1] * sum(len(s) for s in sequence[:-1])) + [-1] + sequence[-1][1:]  # -1 for the masked parts, then the actual targets for the reply
+            instance["labels"] = ([PAD_VALUE] * sum(len(s) for s in sequence[:-1])) + [PAD_VALUE] + sequence[-1][1:]  # -1 for the masked parts, then the actual targets for the reply
         return instance
 
 
     def pad_and_encode(self, dataset):
         tensor_dataset = []
         dataset = utils.pad_dataset(dataset,
-                padding=self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
+                padding=self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token))
         for input_name in utils.MODEL_INPUTS:
             tensor = torch.tensor(dataset[input_name])
             if input_name != "mc_labels":
@@ -133,20 +139,20 @@ class HuggingFaceDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         with utils.TimerContext("Loading train dataloader"):
             train_processed = self.featurize(self.train, cache=f"{os.path.splitext(self.dataset_cache)[0]}_train.bin")
-        train_dl = DataLoader(train_processed, batch_size=self.batch_size)
+        train_dl = DataLoader(train_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
         return train_dl
 
     def val_dataloader(self):
         with utils.TimerContext("Loading validation dataloader"):
             val_processed = self.featurize(self.val, cache=f"{os.path.splitext(self.dataset_cache)[0]}_valid.bin")
-        val_dl = DataLoader(val_processed, batch_size=self.batch_size)
+        val_dl = DataLoader(val_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
         return val_dl
 
     def test_dataloader(self):
         with utils.TimerContext("loading testing dataloader"):
             logger.warn("You have loaded the testing dataloader. Please ensure that you did this on purpose!")
             test_processed = self.featurize(self.test, cache=f"{os.path.splitext(self.dataset_cache)[0]}_test.bin")
-        test_dl = DataLoader(test_processed, batch_size=self.batch_size)
+        test_dl = DataLoader(test_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
         return test_dl
 
 

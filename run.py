@@ -10,8 +10,10 @@ from load_data import HuggingFaceDataModule
 import utils
 
 import logging
-logging.basicConfig(level=logging.INFO, format=utils.LOGGER_FORMAT)
+logging.basicConfig(level=logging.ERROR, format=utils.LOGGER_FORMAT)
 logger = logging.getLogger(__file__)
+
+logging.getLogger("transformers.generation_utils").setLevel(logging.ERROR)
 
 def parse_callbacks(callback_config):
     callback_list = []
@@ -26,6 +28,7 @@ def get_options():
     psr.add_argument("--config-file", required=True, type=str, help="YAML configuration file for experiment")
     psr.add_argument("--test", action='store_true', help="Run evaluation on val set only.")
     psr.add_argument("--dry-run", action='store_true', help="If true, no logger will be used.")
+    psr.add_argument("--ckpt_path", type=str, help="Path to checkpoint")
     psr = Trainer.add_argparse_args(psr)
     return psr
 
@@ -37,8 +40,8 @@ if __name__ == '__main__':
         config = yaml.load(f, Loader=yaml.FullLoader)
 
     # load data, model
-    model = HuggingFaceModel(config["name"], config["model"])
     data = HuggingFaceDataModule(config["data"])
+    model = HuggingFaceModel(config["name"], config["model"])
 
     # load experimental setup stuff
     callbacks = parse_callbacks(config.get("callbacks", {}))
@@ -53,12 +56,14 @@ if __name__ == '__main__':
     # run experiment
     if not args.test:
         data.setup('train')
-        data.attach_special_tokens(model.model)
+        #data.attach_special_tokens(model.model)
+        model.attach_tokenizer(data.tokenizer)
         trainer.fit(model, data.train_dataloader(), data.val_dataloader())
     else:
         data.setup('test')
         data.attach_special_tokens(model.model)
+        #model.attach_tokenizer(data.tokenizer)
         logger.warning("To protect you from yourself, this eval loop loads the validation dataset. Change this manually if you want to actually run on test.")
-        trainer.test(test_dataloaders=data.val_dataloader())
+        trainer.test(test_dataloaders=data.val_dataloader(), ckpt_path=args.ckpt_path)
     if experiment_logger:
-        experiment_logger.finalize()
+        experiment_logger.finalize('success')

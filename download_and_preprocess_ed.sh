@@ -24,6 +24,7 @@ if [[ $DOWNLOAD -eq 1 ]]; then
     wget https://dl.fbaipublicfiles.com/parlai/empatheticdialogues/empatheticdialogues.tar.gz
     tar xf empatheticdialogues.tar.gz
     mv empatheticdialogues data
+    rm empatheticdialogues.tar.gz
 fi
 
 if [[ $PREPROCESS -eq 1 ]]; then
