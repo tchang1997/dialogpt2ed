@@ -3,7 +3,14 @@ import transformers
 from transformers import GPT2DoubleHeadsModel
 import torch
 import torch.optim as optim
-import wandb
+
+import logging
+logger = logging.getLogger(__file__)
+
+try:
+  import wandb
+except ImportError:
+  logger.warning("Unable to import wandb. Table-level logging will not work -- only inference, or training with no logging will work")
 from pytorch_lightning.metrics import Accuracy
 
 from load_data import SPEAKER1_ID

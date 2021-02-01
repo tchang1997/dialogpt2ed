@@ -4,7 +4,6 @@ from itertools import chain
 import json
 import os
 
-from datasets import load_dataset, list_datasets
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -15,6 +14,13 @@ from utils import PAD_VALUE
 
 import logging
 logger = logging.getLogger(__file__)
+
+
+try:
+    from datasets import load_dataset, list_datasets
+except ImportError:
+    logger.warning("Unable to import datasets (HuggingFace). Must use custom dataset spec.")
+
 
 PAD_VALUE = -100
 SPEAKER1_ID, SPEAKER2_ID = list(range(2))
