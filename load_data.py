@@ -1,4 +1,5 @@
 from collections import defaultdict
+from functools import partial
 from itertools import chain
 import json
 import os
@@ -6,7 +7,7 @@ import os
 from datasets import load_dataset, list_datasets
 import pytorch_lightning as pl
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 from transformers import GPT2Tokenizer
 
 import utils
@@ -28,6 +29,30 @@ def file_load_dataset(name, split=None):
             return json.load(f)[split]
         else:
             return json.load(f)
+
+class EmpatheticDialoguesDataset(Dataset):
+    def __init__(self, data_dict, pad_token_id):
+        self.data = data_dict
+        self.pad_token_id = pad_token_id
+
+    def __getitem__(self, idx): # note: only works for single-candidate case!
+        record = []
+        for input_name in utils.MODEL_INPUTS:
+            if input_name != "mc_labels":
+                distractor = self.data[input_name][2 * idx]
+                response = self.data[input_name][2 * idx + 1]
+                pad_to_length = max(len(distractor), len(response))
+                distractor_tensor = torch.cat([torch.tensor(distractor), self.pad_token_id * torch.ones(pad_to_length - len(distractor))], dim=-1)
+                response_tensor = torch.cat([torch.tensor(response), self.pad_token_id * torch.ones(pad_to_length - len(response))], dim=-1)
+                tensor = torch.stack([distractor_tensor, response_tensor], dim=0)
+            else:
+                tensor = torch.tensor([self.data[input_name][idx]])
+            record.append(tensor) # tensor has shape (1, 2, len)
+        return record
+
+    def __len__(self):
+        return len(self.data["input_ids"]) // 2
+
 
 class HuggingFaceDataModule(pl.LightningDataModule):
     def __init__(self, data_config):
@@ -112,17 +137,16 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
         instance["input_ids"] = list(chain(*sequence))  # list of ints
         instance["token_type_ids"] = [SPEAKER2_ID if i % 2 else SPEAKER1_ID for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
-        instance["mc_token_ids"] = len(instance["input_ids"]) - 1  # int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
+        instance["mc_token_ids"] = [len(instance["input_ids"]) - 1]  # singleton int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
         instance["labels"] = [PAD_VALUE] * len(instance["input_ids"])  # -100 for the whole sequence if lm_labels=False
         if lm_labels:
             instance["labels"] = ([PAD_VALUE] * sum(len(s) for s in sequence[:-1])) + [PAD_VALUE] + sequence[-1][1:]  # -1 for the masked parts, then the actual targets for the reply
         return instance
 
-
+    # this is like super deprecated
     def pad_and_encode(self, dataset):
         tensor_dataset = []
-        dataset = utils.pad_dataset(dataset,
-                padding=self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token))
+        dataset = utils.pad_dataset(dataset, self.tokenizer)
         for input_name in utils.MODEL_INPUTS:
             tensor = torch.tensor(dataset[input_name])
             if input_name != "mc_labels":
@@ -130,29 +154,33 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             tensor_dataset.append(tensor)
         return tensor_dataset
 
+
     def featurize(self, dataset, cache=None):
         tokenized = self.load_tokenized_dataset(dataset, cache)
         restructured = self.build_inputs_and_labels(tokenized)
-        tensorified = self.pad_and_encode(restructured)
-        return TensorDataset(*tensorified)
+        dataset = EmpatheticDialoguesDataset(restructured, self.tokenizer.pad_token_id)
+        return dataset
+        #tensorified = self.pad_and_encode(restructured)
+        #return TensorDataset(*tensorified)
 
     def train_dataloader(self):
         with utils.TimerContext("Loading train dataloader"):
             train_processed = self.featurize(self.train, cache=f"{os.path.splitext(self.dataset_cache)[0]}_train.bin")
-        train_dl = DataLoader(train_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
+        train_dl = DataLoader(train_processed, num_workers=self.num_workers, batch_size=self.batch_size, collate_fn=partial(utils.pad_dataset, self.tokenizer.pad_token_id), shuffle=True)
         return train_dl
 
     def val_dataloader(self):
         with utils.TimerContext("Loading validation dataloader"):
             val_processed = self.featurize(self.val, cache=f"{os.path.splitext(self.dataset_cache)[0]}_valid.bin")
-        val_dl = DataLoader(val_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
+        val_dl = DataLoader(val_processed, num_workers=self.num_workers, batch_size=self.batch_size, collate_fn=partial(utils.pad_dataset, self.tokenizer.pad_token_id), shuffle=False)
         return val_dl
 
     def test_dataloader(self):
         with utils.TimerContext("loading testing dataloader"):
             logger.warn("You have loaded the testing dataloader. Please ensure that you did this on purpose!")
             test_processed = self.featurize(self.test, cache=f"{os.path.splitext(self.dataset_cache)[0]}_test.bin")
-        test_dl = DataLoader(test_processed, num_workers=os.cpu_count(), batch_size=self.batch_size)
+        test_dl = DataLoader(test_processed, num_workers=self.num_workers, batch_size=self.batch_size, shuffle=False)
         return test_dl
+
 
 
