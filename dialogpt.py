@@ -18,14 +18,13 @@ from utils import MODEL_INPUTS, PAD_VALUE
 
 class HuggingFaceModel(pl.LightningModule):
 
-    def __init__(self, model_name, config, do_fine_tune=False):
+    def __init__(self, model_name, config):
         super().__init__()
 
         # todo: validate config structure
         self.config = config
         self.model_name = model_name
-        if do_fine_tune:
-            self.model = GPT2DoubleHeadsModel.from_pretrained(model_name)
+        self.model = GPT2DoubleHeadsModel.from_pretrained(model_name)
         self.curr_eval_table = []
         self.accuracy = Accuracy()
 
@@ -81,10 +80,15 @@ class HuggingFaceModel(pl.LightningModule):
         short_distractor = distractor[orig != distractor] # (bs, short_len)
         eos_tensor = torch.tensor([self.tokenizer.eos_token_id], device=self.model.device)
         short_orig = torch.cat([orig[orig_token_type_ids == SPEAKER1_ID], eos_tensor], dim=-1) # [any, any, any, ... , <eos>]
-        if short_orig.ndim == 1: short_orig = short_orig.unsqueeze(0) 
+        if short_orig.ndim == 1:
+            short_orig = short_orig.unsqueeze(0) # shape (n, len)
+
+        dynamic_config = self.config['inference']
+        dynamic_config['min_length'] = short_orig.size(-1) + self.config['min_length']
+        dynamic_config['max_length'] = short_orig.size(-1) + self.config['max_length']
         candidate_sents = self.model.generate(short_orig,
                 pad_token_id=self.tokenizer.eos_token_id,
-                **self.config['inference'])
+                **dynamic_config)
         self.log_text_predictions(short_orig,
                 short_distractor,
                 targets,
