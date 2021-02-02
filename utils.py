@@ -2,6 +2,7 @@ from contextlib import AbstractContextManager
 import io
 import sys
 import time
+import torch
 
 from typing import Optional
 
@@ -13,12 +14,19 @@ PADDED_INPUTS = ["input_ids", "labels", "token_type_ids"]
 LOGGER_FORMAT = "[%(levelname)s] %(name)s %(asctime)s [%(filename)s:%(funcName)s:%(lineno)d]\n%(message)s\n"
 PAD_VALUE = -100
 
-def pad_dataset(dataset, padding=0):
+def pad_dataset(pad_token, batch):
     """ Pad the dataset. This could be optimized by defining a Dataset class and padding at the batch level, but this is simpler. """
-    max_l = max(len(x) for x in dataset["input_ids"])
-    for name in PADDED_INPUTS:
-        dataset[name] = [x + [padding if name != "labels" else PAD_VALUE] * (max_l - len(x)) for x in dataset[name]]
-    return dataset
+    input_ids_lens = [example[MODEL_INPUTS.index("input_ids")].size(-1) for example in batch]
+    max_l = max(input_ids_lens)
+    for i in range(len(batch)): # TODO: this is not very efficient.  make it efficient.
+        curr_example = batch[i]
+        for name in PADDED_INPUTS:
+            curr_data = curr_example[MODEL_INPUTS.index(name)]
+            seq_len = curr_data.size(-1)
+            batch[i][MODEL_INPUTS.index(name)] = torch.cat([curr_data, (pad_token if name != "labels" else PAD_VALUE) * torch.ones(max_l - seq_len)], dim=-1)
+    inputs = list(zip(*batch))
+    inputs = [torch.stack(tensor_tuple, dim=0).long() for tensor_tuple in inputs]
+    return inputs
 
 
 class TimerContext(AbstractContextManager):

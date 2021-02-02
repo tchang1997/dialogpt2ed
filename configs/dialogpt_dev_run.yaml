@@ -1,11 +1,11 @@
 name: "microsoft/DialoGPT-medium" # change this when using pretrained
 model: 
     optimizer:
-        name: "Adam"
+        name: "AdamW"
         kwargs:
-            lr: 1.0e-3
+            lr: 1.e-6 
     inference:
-        temperature: 2.0
+        temperature: 0.7
         top_k: 20
         top_p: 0.9
         min_length: 1
@@ -20,17 +20,8 @@ data:
     dataset_cache: "./data/empatheticdialogues/ed_cache.bin"
     num_candidates: 2
     max_history: 2
-    num_workers: 8
-callbacks:
-    ModelCheckpoint:
-        monitor: 'val_loss'
-        save_top_k: 1
-        verbose: True
-    EarlyStopping:
-        monitor: 'val_loss'
-        mode: 'min'
-        verbose: True
+    num_workers: 0
 logger:
-    name: "dialogpt_ed_finetune_adam1e-3"
+    name: "dialogpt_ed_finetune"
     project: "dialogpt2ed"
 

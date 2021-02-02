@@ -38,11 +38,14 @@ class HuggingFaceModel(pl.LightningModule):
                 optimizer = getattr(transformers, opt_name)(self.model.parameters(), **opt_config["kwargs"])
         else:
             raise Exception('Unexpected learning algorithm "{}"'.format(opt_name))
+        return optimizer
 
     def attach_tokenizer(self, tokenizer):
         self.tokenizer = tokenizer
 
     def forward(self, batch):
+        batch[1] = batch[1].squeeze(-1) # mc_token_ids
+        batch[3] = batch[3].squeeze(-1) # mc_labels
         inputs = dict(zip(MODEL_INPUTS, batch))
         return self.model(**inputs)
 
@@ -77,14 +80,15 @@ class HuggingFaceModel(pl.LightningModule):
         short_distractor = distractor[orig != distractor] # (bs, short_len)
         eos_tensor = torch.tensor([self.tokenizer.eos_token_id], device=self.model.device)
         short_orig = torch.cat([orig[orig_token_type_ids == SPEAKER1_ID], eos_tensor], dim=-1) # [any, any, any, ... , <eos>]
-        # orig = orig[speaker1_mask] # (bs, short_len)
-        #orig_token_types = orig_token_type_ids[speaker1_mask]
-        if short_orig.ndim == 1: short_orig = short_orig.unsqueeze(0) 
-        # if orig_token_types.ndim == 1: orig_token_types = orig_token_types.unsqueeze(0)
+        if short_orig.ndim == 1:
+            short_orig = short_orig.unsqueeze(0) # shape (n, len)
+
+        dynamic_config = self.config['inference']
+        dynamic_config['min_length'] = short_orig.size(-1) + self.config['min_length']
+        dynamic_config['max_length'] = short_orig.size(-1) + self.config['max_length']
         candidate_sents = self.model.generate(short_orig,
-                #token_type_ids=orig_token_types,
                 pad_token_id=self.tokenizer.eos_token_id,
-                **self.config['inference'])
+                **dynamic_config)
         self.log_text_predictions(short_orig,
                 short_distractor,
                 targets,
