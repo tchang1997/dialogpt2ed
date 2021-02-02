@@ -8,10 +8,11 @@ model:
             correct_bias: True
     inference:
         temperature: 0.7
-        top_k: 20
+        top_k: 0
         top_p: 0.9
         min_length: 1
-        max_length: 1000
+        max_length: 20
+        num_return_sequences: 10
     train:
         lm_weight: 2.0
         mc_weight: 1.0
