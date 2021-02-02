@@ -21,7 +21,9 @@ try:
 except ImportError:
     logger.warning("Unable to import datasets (HuggingFace). Must use custom dataset spec.")
 
-
+SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
+ATTR_TO_SPECIAL_TOKEN = {'bos_token': '<bos>', 'eos_token': '<eos>', 'pad_token': '<pad>',
+                                 'additional_special_tokens': ('<speaker1>', '<speaker2>')}
 PAD_VALUE = -100
 SPEAKER1_ID, SPEAKER2_ID = list(range(2))
 # SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
@@ -70,7 +72,8 @@ class HuggingFaceDataModule(pl.LightningDataModule):
     def setup(self, stage):
         logger.info("Setting up tokenizer and raw data...")
         self.tokenizer = GPT2Tokenizer.from_pretrained(self.tokenizer)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
+        orig_num_tokens = len(tokenizer.encoder)
+        num_added_tokens = tokenizer.add_special_tokens(ATTR_TO_SPECIAL_TOKEN)
 
         if self.name in list_datasets():
             logger.info("Loading HuggingFace dataset...")
@@ -89,13 +92,6 @@ class HuggingFaceDataModule(pl.LightningDataModule):
             # self.test = self.dataset_setup_fn(self.name, split="test")
         else:
             raise NotImplementedError()
-
-
-    def attach_special_tokens(self, model):
-        orig_num_tokens = self.tokenizer.vocab_size
-        num_added_tokens = self.tokenizer.add_special_tokens(utils.ATTR_TO_SPECIAL_TOKEN)
-        if num_added_tokens > 0:
-            model.resize_token_embeddings(new_num_tokens=orig_num_tokens + num_added_tokens)
 
 
     def load_tokenized_dataset(self, dataset, cache):
@@ -136,14 +132,14 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
 
     def build_input_from_segments(self, history, reply, lm_labels=False, with_eos=True):
-        # bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
+        bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
         instance = {}
         sequence = history + [reply + ([self.tokenizer.eos_token_id] if with_eos else [])]
-        # sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
+        sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
 
         instance["input_ids"] = list(chain(*sequence))  # list of ints
-        instance["token_type_ids"] = [SPEAKER2_ID if i % 2 else SPEAKER1_ID for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
-        instance["mc_token_ids"] = [len(instance["input_ids"]) - 1]  # singleton int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
+        instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
+        instance["mc_token_ids"] = len(instance["input_ids"]) - 1  # singleton int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
         instance["labels"] = [PAD_VALUE] * len(instance["input_ids"])  # -100 for the whole sequence if lm_labels=False
         if lm_labels:
             instance["labels"] = ([PAD_VALUE] * sum(len(s) for s in sequence[:-1])) + [PAD_VALUE] + sequence[-1][1:]  # -1 for the masked parts, then the actual targets for the reply

@@ -13,7 +13,7 @@ except ImportError:
   logger.warning("Unable to import wandb. Table-level logging will not work -- only inference, or training with no logging will work")
 from pytorch_lightning.metrics import Accuracy
 
-from load_data import SPEAKER1_ID
+from load_data import SPEAKER1_ID, SPECIAL_TOKENS
 from utils import MODEL_INPUTS, PAD_VALUE
 
 class HuggingFaceModel(pl.LightningModule):
@@ -42,6 +42,7 @@ class HuggingFaceModel(pl.LightningModule):
 
     def attach_tokenizer(self, tokenizer):
         self.tokenizer = tokenizer
+        self.model.resize_token_embeddings(len(tokenizer))
 
     def forward(self, batch):
         batch[1] = batch[1].squeeze(-1) # mc_token_ids
@@ -49,7 +50,7 @@ class HuggingFaceModel(pl.LightningModule):
         inputs = dict(zip(MODEL_INPUTS, batch))
         return self.model(**inputs)
 
-    
+
     def training_step(self, batch, batch_idx):
         # model type: GPT2LMHEadModel (https://huggingface.co/transformers/model_doc/gpt2.html#gpt2lmheadmodel)
         train_config = self.config["train"]
@@ -63,7 +64,10 @@ class HuggingFaceModel(pl.LightningModule):
         self.log('mc_loss', mc_loss, prog_bar=True)
         return {'loss': loss}
 
+
     def eval_step(self, batch, batch_idx):
+
+        bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
         train_config = self.config["train"]
         outputs = self(batch)
         lm_loss, mc_loss, _, mc_logits = outputs[:4]
@@ -71,15 +75,15 @@ class HuggingFaceModel(pl.LightningModule):
 
         mc_labels = batch[MODEL_INPUTS.index("mc_labels")]
         mc_acc = self.accuracy(mc_logits, mc_labels)
-    
+
         input_ids = batch[MODEL_INPUTS.index("input_ids")] # (bs, 2, len)
         distractor, orig = input_ids[:, 0], input_ids[:, 1]
 
         orig_token_type_ids = batch[MODEL_INPUTS.index("token_type_ids")][:, 1]
         targets = torch.index_select(batch[MODEL_INPUTS.index("labels")], 1, mc_labels.view(-1)).squeeze(1) # (bs, len)
         short_distractor = distractor[orig != distractor] # (bs, short_len)
-        eos_tensor = torch.tensor([self.tokenizer.eos_token_id], device=self.model.device)
-        short_orig = torch.cat([orig[orig_token_type_ids == SPEAKER1_ID], eos_tensor], dim=-1) # [any, any, any, ... , <eos>]
+        eos_tensor = torch.tensor([eos], device=self.model.device)
+        short_orig = torch.cat([orig[orig_token_type_ids == speaker1], eos_tensor], dim=-1) # [any, any, any, ... , <eos>]
         if short_orig.ndim == 1:
             short_orig = short_orig.unsqueeze(0) # shape (n, len)
 

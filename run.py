@@ -56,13 +56,13 @@ if __name__ == '__main__':
     # run experiment
     if not args.test:
         data.setup('train')
-        #data.attach_special_tokens(model.model)
+        data.attach_special_tokens(model.model)
         model.attach_tokenizer(data.tokenizer)
         trainer.fit(model, data.train_dataloader(), data.val_dataloader())
     else:
         data.setup('test')
         data.attach_special_tokens(model.model)
-        #model.attach_tokenizer(data.tokenizer)
+        model.attach_tokenizer(data.tokenizer)
         logger.warning("To protect you from yourself, this eval loop loads the validation dataset. Change this manually if you want to actually run on test.")
         trainer.test(test_dataloaders=data.val_dataloader(), ckpt_path=args.ckpt_path)
     if experiment_logger:
