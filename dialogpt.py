@@ -3,8 +3,10 @@ import transformers
 from transformers import GPT2DoubleHeadsModel
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import OneCycleLR
 
 import logging
+import math
 logger = logging.getLogger(__file__)
 
 try:
@@ -13,18 +15,21 @@ except ImportError:
   logger.warning("Unable to import wandb. Table-level logging will not work -- only inference, or training with no logging will work")
 from pytorch_lightning.metrics import Accuracy
 
-from load_data import SPEAKER1_ID, SPECIAL_TOKENS
+from load_data import SPEAKER1_ID, SPECIAL_TOKENS, MAX_GPT2_LENGTH
 from utils import MODEL_INPUTS, PAD_VALUE
 
 class HuggingFaceModel(pl.LightningModule):
 
-    def __init__(self, model_name, config):
+    def __init__(self, model_name, config, tokenizer):
         super().__init__()
 
         # todo: validate config structure
         self.config = config
         self.model_name = model_name
         self.model = GPT2DoubleHeadsModel.from_pretrained(model_name)
+        self.tokenizer = tokenizer
+        self.model.resize_token_embeddings(len(tokenizer))
+
         self.curr_eval_table = []
         self.accuracy = Accuracy()
 
@@ -38,11 +43,12 @@ class HuggingFaceModel(pl.LightningModule):
                 optimizer = getattr(transformers, opt_name)(self.model.parameters(), **opt_config["kwargs"])
         else:
             raise Exception('Unexpected learning algorithm "{}"'.format(opt_name))
-        return optimizer
-
-    def attach_tokenizer(self, tokenizer):
-        self.tokenizer = tokenizer
-        self.model.resize_token_embeddings(len(tokenizer))
+        scheduler_config = self.config["scheduler"]
+        scheduler = {
+                'scheduler': OneCycleLR(optimizer, opt_config["kwargs"]["lr"], **scheduler_config), # todo: don't hardcode this
+                'interval': 'step'
+                }
+        return [optimizer], [scheduler]
 
     def forward(self, batch):
         batch[1] = batch[1].squeeze(-1) # mc_token_ids
@@ -59,8 +65,9 @@ class HuggingFaceModel(pl.LightningModule):
         loss = lm_loss * train_config["lm_weight"] + mc_loss * train_config["mc_weight"]
         mc_acc = self.accuracy(mc_logits, batch[MODEL_INPUTS.index("mc_labels")])
         self.log('loss', loss)
-        self.log('mc_acc', mc_acc, prog_bar=True)
+        self.log('mc_acc', mc_acc, prog_bar=False)
         self.log('lm_loss', lm_loss, prog_bar=True)
+        self.log('ppl', math.exp(lm_loss), prog_bar=True)
         self.log('mc_loss', mc_loss, prog_bar=True)
         return {'loss': loss}
 
@@ -82,14 +89,15 @@ class HuggingFaceModel(pl.LightningModule):
         orig_token_type_ids = batch[MODEL_INPUTS.index("token_type_ids")][:, 1]
         targets = torch.index_select(batch[MODEL_INPUTS.index("labels")], 1, mc_labels.view(-1)).squeeze(1) # (bs, len)
         short_distractor = distractor[orig != distractor] # (bs, short_len)
-        eos_tensor = torch.tensor([eos], device=self.model.device)
-        short_orig = torch.cat([orig[orig_token_type_ids == speaker1], eos_tensor], dim=-1) # [any, any, any, ... , <eos>]
+        switch_tensor = torch.tensor([speaker2], device=self.model.device)
+        short_orig = torch.cat([orig[orig_token_type_ids == speaker1], switch_tensor], dim=-1) # [any, any, any, ... , <speaker2> -- s.t. model will generate until EOS]
         if short_orig.ndim == 1:
             short_orig = short_orig.unsqueeze(0) # shape (n, len)
 
         dynamic_config = self.config['inference']
-        dynamic_config['min_length'] = short_orig.size(-1) + self.config['min_length']
-        dynamic_config['max_length'] = short_orig.size(-1) + self.config['max_length']
+        dynamic_config['min_length'] = short_orig.size(-1) + self.config['inference']['min_length']
+        dynamic_config['max_length'] = min(short_orig.size(-1) + self.config['inference']['max_length'], MAX_GPT2_LENGTH)
+        
         candidate_sents = self.model.generate(short_orig,
                 pad_token_id=self.tokenizer.eos_token_id,
                 **dynamic_config)
@@ -115,13 +123,10 @@ class HuggingFaceModel(pl.LightningModule):
         self.logger.experiment.log({table_name: table})
         self.curr_eval_table = []
 
-    def clean_text_from_tensor(self, ids):
-        raw_tokens = self.tokenizer.convert_ids_to_tokens(ids.view(-1).tolist())
-        clean_tokens = [token.replace("<pad>", "").replace(chr(288), "") for token in raw_tokens]
-        return " ".join(clean_tokens)
+
 
     def log_text_predictions(self, orig, distractor, labels, predictions):
-        original_text = self.tokenizer.batch_decode(orig, skip_special_tokens=True)
+        original_text = self.tokenizer.batch_decode(orig)
         predictions_text = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
 
         labels = labels[labels != PAD_VALUE]
@@ -131,6 +136,7 @@ class HuggingFaceModel(pl.LightningModule):
         targets_text = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
         distractor_text = self.tokenizer.batch_decode(distractor, skip_special_tokens=True)
         self.curr_eval_table += list(zip(original_text, targets_text, distractor_text, predictions_text))
+        logger.info("Generated: '{original_text}' => '{predictions_text}'")
 
     def validation_epoch_end(self, batches):
         self.eval_epoch_end(batches, f"textgen_val_{self.current_epoch}_step{self.global_step}")

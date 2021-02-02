@@ -14,7 +14,7 @@ from utils import PAD_VALUE
 
 import logging
 logger = logging.getLogger(__file__)
-
+logger.level = logging.INFO
 
 try:
     from datasets import load_dataset, list_datasets
@@ -25,6 +25,7 @@ SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
 ATTR_TO_SPECIAL_TOKEN = {'bos_token': '<bos>', 'eos_token': '<eos>', 'pad_token': '<pad>',
                                  'additional_special_tokens': ('<speaker1>', '<speaker2>')}
 PAD_VALUE = -100
+MAX_GPT2_LENGTH = 1024
 SPEAKER1_ID, SPEAKER2_ID = list(range(2))
 # SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
 
@@ -49,13 +50,16 @@ class EmpatheticDialoguesDataset(Dataset):
             if input_name != "mc_labels":
                 distractor = self.data[input_name][2 * idx]
                 response = self.data[input_name][2 * idx + 1]
+
                 pad_to_length = max(len(distractor), len(response))
-                distractor_tensor = torch.cat([torch.tensor(distractor), self.pad_token_id * torch.ones(pad_to_length - len(distractor))], dim=-1)
-                response_tensor = torch.cat([torch.tensor(response), self.pad_token_id * torch.ones(pad_to_length - len(response))], dim=-1)
+                distractor_tensor = torch.cat([torch.LongTensor(distractor), self.pad_token_id * torch.ones(pad_to_length - len(distractor), dtype=torch.long)], dim=-1)
+                response_tensor = torch.cat([torch.LongTensor(response), self.pad_token_id * torch.ones(pad_to_length - len(response), dtype=torch.long)], dim=-1)
                 tensor = torch.stack([distractor_tensor, response_tensor], dim=0)
             else:
-                tensor = torch.tensor([self.data[input_name][idx]])
-            record.append(tensor) # tensor has shape (1, 2, len)
+                tensor = torch.LongTensor([self.data[input_name][idx]])
+            if tensor.size(-1) > MAX_GPT2_LENGTH:
+                tensor = tensor[..., :MAX_GPT2_LENGTH] # hard limit on GPT2 seq length
+            record.append(tensor) # tensor has shape (2, len)
         return record
 
     def __len__(self):
@@ -68,12 +72,14 @@ class HuggingFaceDataModule(pl.LightningDataModule):
         self.config = data_config
         for key in self.config:
             setattr(self, key, self.config[key])
+        self.tokenizer = GPT2Tokenizer.from_pretrained(self.tokenizer)
+        orig_num_tokens = len(self.tokenizer.encoder)
+        num_added_tokens = self.tokenizer.add_special_tokens(ATTR_TO_SPECIAL_TOKEN)
+        print(f"Added {num_added_tokens} tokens to vocab of length {orig_num_tokens}")
 
     def setup(self, stage):
-        logger.info("Setting up tokenizer and raw data...")
-        self.tokenizer = GPT2Tokenizer.from_pretrained(self.tokenizer)
-        orig_num_tokens = len(tokenizer.encoder)
-        num_added_tokens = tokenizer.add_special_tokens(ATTR_TO_SPECIAL_TOKEN)
+        logger.info("Loading raw data...")
+
 
         if self.name in list_datasets():
             logger.info("Loading HuggingFace dataset...")
@@ -139,7 +145,7 @@ class HuggingFaceDataModule(pl.LightningDataModule):
 
         instance["input_ids"] = list(chain(*sequence))  # list of ints
         instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids
-        instance["mc_token_ids"] = len(instance["input_ids"]) - 1  # singleton int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
+        instance["mc_token_ids"] = [len(instance["input_ids"]) - 1]  # singleton int, the length of the whole input. it gives the location of the last hidden state, from which we compute the multiple choice loss
         instance["labels"] = [PAD_VALUE] * len(instance["input_ids"])  # -100 for the whole sequence if lm_labels=False
         if lm_labels:
             instance["labels"] = ([PAD_VALUE] * sum(len(s) for s in sequence[:-1])) + [PAD_VALUE] + sequence[-1][1:]  # -1 for the masked parts, then the actual targets for the reply

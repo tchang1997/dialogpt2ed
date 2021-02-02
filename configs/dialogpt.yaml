@@ -6,15 +6,21 @@ model:
             lr: 6.25e-5
             weight_decay: 0.1
             correct_bias: True
+    scheduler:
+        epochs: 3
+        steps_per_epoch: 41254
+        pct_start: 0.
+        anneal_strategy: "linear"
     inference:
         temperature: 0.7
         top_k: 0
         top_p: 0.9
         min_length: 1
         max_length: 20
-        num_return_sequences: 10
+        do_sample: True
+        num_return_sequences: 1 #  save validation time
     train:
-        lm_weight: 2.0
+        lm_weight: 1.0
         mc_weight: 1.0
 data:
     name: "./data/empatheticdialogues/ed_merged.json"
@@ -27,7 +33,7 @@ data:
 callbacks:
     ModelCheckpoint:
         monitor: 'val_loss'
-        save_top_k: 1
+        save_top_k: 3
         verbose: True
     EarlyStopping:
         monitor: 'val_loss'

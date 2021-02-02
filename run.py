@@ -41,7 +41,7 @@ if __name__ == '__main__':
 
     # load data, model
     data = HuggingFaceDataModule(config["data"])
-    model = HuggingFaceModel(config["name"], config["model"])
+    model = HuggingFaceModel(config["name"], config["model"], data.tokenizer)
 
     # load experimental setup stuff
     callbacks = parse_callbacks(config.get("callbacks", {}))
@@ -56,13 +56,9 @@ if __name__ == '__main__':
     # run experiment
     if not args.test:
         data.setup('train')
-        data.attach_special_tokens(model.model)
-        model.attach_tokenizer(data.tokenizer)
         trainer.fit(model, data.train_dataloader(), data.val_dataloader())
     else:
         data.setup('test')
-        data.attach_special_tokens(model.model)
-        model.attach_tokenizer(data.tokenizer)
         logger.warning("To protect you from yourself, this eval loop loads the validation dataset. Change this manually if you want to actually run on test.")
         trainer.test(test_dataloaders=data.val_dataloader(), ckpt_path=args.ckpt_path)
     if experiment_logger:
