@@ -140,8 +140,9 @@ class HuggingFaceDataModule(pl.LightningDataModule):
     def build_input_from_segments(self, history, reply, lm_labels=False, with_eos=True):
         bos, eos, speaker1, speaker2 = self.tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
         instance = {}
-        sequence = history + [reply + ([self.tokenizer.eos_token_id] if with_eos else [])]
-        sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
+        sequence = [[bos]] + history + [reply + ([eos] if with_eos else [])]
+        sequence = [sequence[0]] + [[speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence[1:])]
+        # sequence = [([bos] if i==0 else []) + [speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
 
         instance["input_ids"] = list(chain(*sequence))  # list of ints
         instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # list of ints (all speaker1 or speaker2, starting with speaker1), same length as input_ids

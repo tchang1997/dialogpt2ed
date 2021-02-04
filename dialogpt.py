@@ -65,7 +65,7 @@ class HuggingFaceModel(pl.LightningModule):
         loss = lm_loss * train_config["lm_weight"] + mc_loss * train_config["mc_weight"]
         mc_acc = self.accuracy(mc_logits, batch[MODEL_INPUTS.index("mc_labels")])
         self.log('loss', loss)
-        self.log('mc_acc', mc_acc, prog_bar=False)
+        self.log('mc_acc', mc_acc, prog_bar=False, on_epoch=True)
         self.log('lm_loss', lm_loss, prog_bar=True)
         self.log('ppl', math.exp(lm_loss), prog_bar=True)
         self.log('mc_loss', mc_loss, prog_bar=True)
@@ -86,18 +86,18 @@ class HuggingFaceModel(pl.LightningModule):
         input_ids = batch[MODEL_INPUTS.index("input_ids")] # (bs, 2, len)
         distractor, orig = input_ids[:, 0], input_ids[:, 1]
 
-        orig_token_type_ids = batch[MODEL_INPUTS.index("token_type_ids")][:, 1]
+        # orig_token_type_ids = batch[MODEL_INPUTS.index("token_type_ids")][:, 1]
         targets = torch.index_select(batch[MODEL_INPUTS.index("labels")], 1, mc_labels.view(-1)).squeeze(1) # (bs, len)
         short_distractor = distractor[orig != distractor] # (bs, short_len)
         switch_tensor = torch.tensor([speaker2], device=self.model.device)
-        short_orig = torch.cat([orig[orig_token_type_ids == speaker1], switch_tensor], dim=-1) # [any, any, any, ... , <speaker2> -- s.t. model will generate until EOS]
+        short_orig = torch.cat([orig[orig_token_type_ids != PAD_VALUE], switch_tensor], dim=-1) # [any, any, any, ... , <speaker2> -- s.t. model will generate until EOS]
         if short_orig.ndim == 1:
             short_orig = short_orig.unsqueeze(0) # shape (n, len)
 
         dynamic_config = self.config['inference']
         dynamic_config['min_length'] = short_orig.size(-1) + self.config['inference']['min_length']
         dynamic_config['max_length'] = min(short_orig.size(-1) + self.config['inference']['max_length'], MAX_GPT2_LENGTH)
-        
+
         candidate_sents = self.model.generate(short_orig,
                 pad_token_id=self.tokenizer.eos_token_id,
                 **dynamic_config)
